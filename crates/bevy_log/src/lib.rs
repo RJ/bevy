@@ -14,7 +14,10 @@ pub use bevy_utils::tracing::{
 use bevy_app::{AppBuilder, Plugin};
 #[cfg(feature = "tracing-chrome")]
 use tracing_subscriber::fmt::{format::DefaultFields, FormattedFields};
+
 use tracing_subscriber::{prelude::*, registry::Registry, EnvFilter};
+use tracing_subscriber::{fmt, fmt::format};
+use std::sync::{Arc, RwLock};
 
 /// Adds logging to Apps.
 #[derive(Default)]
@@ -28,6 +31,9 @@ pub struct LogSettings {
     /// Filters out logs that are "less than" the given level.
     /// This can be further filtered using the `filter` setting.
     pub level: Level,
+
+    /// String that is prepended to the main log message, which you can change with `LogSettings::set_dynamic_prefix`
+    pub dynamic_prefix: Arc<RwLock<String>>,
 }
 
 impl Default for LogSettings {
@@ -35,28 +41,55 @@ impl Default for LogSettings {
         Self {
             filter: "wgpu=error".to_string(),
             level: Level::INFO,
+            dynamic_prefix: Arc::new(RwLock::new(String::new())),
         }
+    }
+}
+
+impl LogSettings {
+    pub fn set_dynamic_prefix(&self, mut msg: String) {
+        if msg.len() > 0 {
+            msg.push(' '); // spacing for when we render it before the message field
+        }
+        *self.dynamic_prefix.write().expect("dynamic_prefix log poisoned") = msg;
     }
 }
 
 impl Plugin for LogPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        let default_filter = {
+        let (default_filter, dynamic_prefix) = {
             let settings = app
                 .world_mut()
                 .get_resource_or_insert_with(LogSettings::default);
-            format!("{},{}", settings.level, settings.filter)
+            (format!("{},{}", settings.level, settings.filter), settings.dynamic_prefix.clone())
         };
 
         let filter_layer = EnvFilter::try_from_default_env()
             .or_else(|_| EnvFilter::try_new(&default_filter))
             .unwrap();
+
         let subscriber = Registry::default().with(filter_layer);
 
         #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
         {
-            let fmt_layer = tracing_subscriber::fmt::Layer::default();
+            // moving dynamic_prefix clone into closure
+            let dynamic_prefix = dynamic_prefix.clone();
+            let formatter = format::debug_fn(move |writer, field, value| {
+                // when rendering the message field (the main bit of text in the info!(...) call)
+                // prepend the dynamic_prefix
+                if field.name() == "message" {
+                    write!(writer, "{}{:?}", *dynamic_prefix.read().expect("extra lock poisoned"), value)
+                } else {
+                    // additional fields just printed as key=val
+                    write!(writer, "{}={:?}", field, value)
+                }
+            })
+            .delimited(", ");
+
+            // use default formatter, but replace field format with our custom one that prefixes message
+            let fmt_layer = fmt::Layer::default().fmt_fields(formatter);
             let subscriber = subscriber.with(fmt_layer);
+
             #[cfg(feature = "tracing-chrome")]
             {
                 let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
