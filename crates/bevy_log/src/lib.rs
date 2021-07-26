@@ -115,7 +115,7 @@ impl Plugin for LogPlugin {
             #[cfg(not(feature = "tracing-chrome"))]
             {
                 bevy_utils::tracing::subscriber::set_global_default(subscriber)
-                    .expect("Could not set global default tracing subscriber. If you've already set up a tracing subscriber, please disable LogPlugin from Bevy's DefaultPlugins");
+                    .unwrap_or(warn!("Could not set global default tracing subscriber. If you've already set up a tracing subscriber, please disable LogPlugin from Bevy's DefaultPlugins"));
             }
         }
 
